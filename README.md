@@ -217,14 +217,10 @@ docker exec -it chrony chronyc sources -v
 
 ### 4. Validate Zabbix Agent 2 locally
 ```bash
-# Optional: Install zabbix-get on Debian host if not present
-# sudo apt install -y zabbix-get
+# Test the agent directly from inside the container
+docker exec -it zabbix-agent2 zabbix_agent2 -t agent.ping
 
-# Query if the agent responds on the default host port 10050 (using zabbix_get from host)
-zabbix_get -s 127.0.0.1 -p 10050 -k agent.ping
-zabbix_get -s ::1 -p 10050 -k agent.ping
-
-# Alternative: Check if port 10050 is open/listening on the host using netcat
+# Verify if port 10050 is open/listening on the host using netcat
 nc -zv 127.0.0.1 10050
 nc -zv ::1 10050
 ```
