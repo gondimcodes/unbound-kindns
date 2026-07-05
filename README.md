@@ -81,7 +81,7 @@ In addition to the containers, the installer configures and optimizes the Debian
 2.  Run the installer passing the server **Hostname** as a required argument:
 
 ```bash
-sudo ./unbound_kindns.sh AMA-UNBOUND-01
+sudo ./unbound_kindns.sh <HOSTNAME>
 ```
 
 *Note: Rebooting the server after installation will be required only for the Grub flags (AppArmor and Mitigations) and new sysctl changes to take full effect.*
