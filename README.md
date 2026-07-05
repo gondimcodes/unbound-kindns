@@ -6,6 +6,13 @@ This repository contains the tools for deploying a Recursive DNS server (ISP Pro
 
 ---
 
+## Requirements
+
+*   **Operating System**: **Debian 13 (Trixie)** or newer.
+*   **Privileges**: Root access (`sudo`) is required to run host sysctl/limit tuning, install packages, and configure the Docker daemon.
+
+---
+
 ## Deployment Structure
 
 The script installs and configures the structure in `/usr/local/src/` with the following structure:
