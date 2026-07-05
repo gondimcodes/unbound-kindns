@@ -75,6 +75,22 @@ In addition to the containers, the installer configures and optimizes the Debian
 
 ---
 
+## Configuration Settings
+
+Before running the installer script `unbound_kindns.sh`, you should review and adjust the deploy settings defined at the top of the script:
+
+*   **`CORES`**: Number of CPU cores dedicated to Unbound (defines `num-threads` in Unbound's configuration, default: `4`).
+*   **`OSPF_INTERFACE`**: Physical network interface for OSPF routing (e.g. `ens20`). If left empty, OSPF/Anycast deployment (FRR container, health checks, cron job) is skipped (running in stand-alone mode).
+*   **`APPARMOR`**: Set to `0` to disable AppArmor for raw performance, or `1` to keep it enabled.
+*   **`MITIGATIONS`**: Set to `off` to disable CPU mitigations for maximum performance, or `auto` to leave it automatic.
+*   **`ZBX_HOSTNAME`**: Identifier for the host in Zabbix Server. If left empty, the script uses the system's hostname.
+*   **`CERT_DOMAIN`**: Domain name for Let's Encrypt SSL certificates (DoH/DoT validation, default: `doh.brasil.com.br`).
+*   **`ZBX_SERVER_HOST`**: IP address of the Zabbix Server.
+*   **`ZBX_SERVER_ACTIVE`**: IP address of the active Zabbix Server.
+*   **`ZBX_LISTENIP`**: Binding IP for the Zabbix Agent 2 container to listen on (default: `0.0.0.0`).
+
+---
+
 ## How to Install and Run
 
 1.  Access the script and customize the variables at the top if necessary (`APPARMOR`, `MITIGATIONS`).
