@@ -69,8 +69,8 @@ draw_banner() {
 :.......:::..::::..::........::::.......::::.......:::..::::..::........::::::::::::..::::..::....::..::::..::........:::..::::..:::......:::
 ============================================================================================================================================================
 EOF
-    printf " Hostname: %-25s | OSPF Interface: %-25s | Cores: %s\n" "${HOSTNAME}" "${OSPF_INTERFACE:-N/A}" "${CORES}"
-    printf " Version: %-27s | Author: %-33s | %s\n" "1.0.0" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
+    printf "Hostname: %-25s | OSPF Interface: %-25s | Cores: %s\n" "${HOSTNAME}" "${OSPF_INTERFACE:-N/A}" "${CORES}"
+    printf "Version: %-27s | Author: %-33s | %s\n" "1.0.0" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
     echo -e "============================================================================================================================================================${RESET}"
 }
 
