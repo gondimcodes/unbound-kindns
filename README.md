@@ -217,10 +217,10 @@ docker exec -it chrony chronyc sources -v
 
 ### 4. Validate Zabbix Agent 2 locally
 ```bash
-# Test the agent directly from inside the container
+# Test the agent directly from inside the container (Expected output: agent.ping [s|1])
 docker exec -it zabbix-agent2 zabbix_agent2 -t agent.ping
 
-# Verify if port 10050 is open/listening on the host using netcat
+# Verify if port 10050 is open/listening on the host using netcat (Expected: Connection to ... succeeded!)
 nc -zv 127.0.0.1 10050
 nc -zv ::1 10050
 ```
