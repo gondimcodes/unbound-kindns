@@ -2,7 +2,7 @@
 # unbound_kindns.sh - Recursive DNS and OSPF Routing Deploy in Docker
 # Installs Docker, Docker Compose, and configures Unbound (compiled), FRR, and Chrony.
 # Author: Marcelo Gondim <gondim@gmail.com>
-# Version: 1.0.2
+# Version: 1.0.3
 
 # Loads system environment variables to preserve existing values
 if [ -f /etc/environment ]; then
@@ -70,7 +70,7 @@ draw_banner() {
 ============================================================================================================================================================
 EOF
     printf "Hostname: %-25s | OSPF Interface: %-25s | Cores: %s\n" "${HOSTNAME}" "${OSPF_INTERFACE:-N/A}" "${CORES}"
-    printf "Version: %-26s | Author: %-33s | %s\n" "1.0.2" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
+    printf "Version: %-26s | Author: %-33s | %s\n" "1.0.3" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
     echo -e "============================================================================================================================================================${RESET}"
 }
 
@@ -1028,6 +1028,7 @@ EOF
     notifempty
     compress
     delaycompress
+    create 0640 88 88
     postrotate
         docker exec unbound unbound-control log_reopen >/dev/null 2>&1 || true
     endscript
