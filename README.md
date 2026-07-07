@@ -15,33 +15,49 @@ This repository contains the tools for deploying a Recursive DNS server (ISP Pro
 
 ## Deployment Structure
 
-The script installs and configures the structure in `/usr/local/src/` with the following structure:
+The script installs and configures build and orchestration files in `/usr/local/src/`, while persistent configurations and dynamic data are stored directly inside **Docker Named Volumes** under `/var/lib/docker/volumes/`:
 
+### Orchestration Tree (`/usr/local/src/`)
 ```text
 /usr/local/src/
 ├── chrony/
 │   ├── docker-compose.yml
-│   ├── Dockerfile
+│   └── Dockerfile
+├── frr/
+│   └── docker-compose.yml
+├── zabbix-agent2/
+│   └── docker-compose.yml
+└── unbound/
+    ├── docker-compose.yml
+    ├── Dockerfile
+    └── entrypoint.sh
+```
+
+### Configuration and Data Tree in Volumes (`/var/lib/docker/volumes/`)
+```text
+/var/lib/docker/volumes/
+├── chrony_config/_data/
 │   ├── chrony.conf
 │   ├── sources.d/
 │   │   └── nic.sources
 │   └── conf.d/
 │       └── ntp_acl.conf
-├── frr/
-│   ├── docker-compose.yml
+├── frr_config/_data/
 │   ├── daemons
 │   ├── frr.conf
 │   └── vtysh.conf
-├── zabbix-agent2/
-│   ├── docker-compose.yml
-│   └── zabbix_agent2.conf
-└── unbound/
-    ├── docker-compose.yml
-    ├── Dockerfile
-    ├── unbound.conf
-    └── unbound.conf.d/
-        ├── local.conf
-        └── controle-acesso.conf
+├── zabbix_agent2_config/_data/
+│   └── (automatically populated by agent)
+├── unbound_config/_data/
+│   ├── unbound.conf
+│   └── unbound.conf.d/
+│       ├── local.conf
+│       ├── controle-acesso.conf
+│       ├── root-auto-trust-anchor-file.conf
+│       └── remote-control.conf
+└── unbound_lib/_data/
+    ├── root.key
+    └── root.zone
 ```
 
 ---
