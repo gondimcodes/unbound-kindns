@@ -2,7 +2,7 @@
 # unbound_kindns.sh - Recursive DNS and OSPF Routing Deploy in Docker
 # Installs Docker, Docker Compose, and configures Unbound (compiled), FRR, and Chrony.
 # Author: Marcelo Gondim <gondim@gmail.com>
-# Version: 1.0.1
+# Version: 1.0.2
 
 # Loads system environment variables to preserve existing values
 if [ -f /etc/environment ]; then
@@ -70,7 +70,7 @@ draw_banner() {
 ============================================================================================================================================================
 EOF
     printf "Hostname: %-25s | OSPF Interface: %-25s | Cores: %s\n" "${HOSTNAME}" "${OSPF_INTERFACE:-N/A}" "${CORES}"
-    printf "Version: %-26s | Author: %-33s | %s\n" "1.0.1" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
+    printf "Version: %-26s | Author: %-33s | %s\n" "1.0.2" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
     echo -e "============================================================================================================================================================${RESET}"
 }
 
@@ -1017,6 +1017,26 @@ EOF
     mkdir -p "${lib_dir}"
     chown -R 88:88 "${config_dir}"
     chown -R 88:88 "${lib_dir}" 2>/dev/null || true
+
+    # Configuração de Logrotate para o Unbound Containerizado no Host
+    log_info "Configuring logrotate for Unbound on host..."
+    cat << 'EOF' > /etc/logrotate.d/unbound
+/var/log/unbound/unbound.log {
+    rotate 5
+    weekly
+    missingok
+    notifempty
+    compress
+    delaycompress
+    postrotate
+        docker exec unbound unbound-control log_reopen >/dev/null 2>&1 || true
+    endscript
+}
+EOF
+    chmod 644 /etc/logrotate.d/unbound
+    if systemctl is-active --quiet logrotate.service || systemctl is-enabled --quiet logrotate.service &>/dev/null; then
+        systemctl restart logrotate.service || true
+    fi
 
     log_success "Unbound structure created."
 }
