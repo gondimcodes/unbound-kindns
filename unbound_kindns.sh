@@ -2,7 +2,7 @@
 # unbound_kindns.sh - Recursive DNS and OSPF Routing Deploy in Docker
 # Installs Docker, Docker Compose, and configures Unbound (compiled), FRR, and Chrony.
 # Author: Marcelo Gondim <gondim@gmail.com>
-# Version: 1.0.3
+# Version: 1.0.4
 
 # Loads system environment variables to preserve existing values
 if [ -f /etc/environment ]; then
@@ -70,7 +70,7 @@ draw_banner() {
 ============================================================================================================================================================
 EOF
     printf "Hostname: %-25s | OSPF Interface: %-25s | Cores: %s\n" "${HOSTNAME}" "${OSPF_INTERFACE:-N/A}" "${CORES}"
-    printf "Version: %-26s | Author: %-33s | %s\n" "1.0.3" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
+    printf "Version: %-26s | Author: %-33s | %s\n" "1.0.4" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
     echo -e "============================================================================================================================================================${RESET}"
 }
 
@@ -1059,13 +1059,17 @@ services:
     network_mode: host
     restart: always
     privileged: true
+    user: root
     volumes:
       - zabbix_agent2_config:/etc/zabbix
-      - /var/run:/var/run:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+    tmpfs:
+      - /run/zabbix:size=10M,mode=0777
+      - /var/run/zabbix:size=10M,mode=0777
     env_file:
       - /etc/environment
 
