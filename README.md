@@ -296,3 +296,11 @@ nc -zv ::1 10050
     sudo chmod 750 /var/log/unbound
     sudo chmod 640 /var/log/unbound/unbound.log
     ```
+
+---
+
+## 🌐 Hosting & Mirroring
+
+This repository is mirrored between GitHub and Codeberg:
+*   **Codeberg (Primary)**: [gondim/unbound-kindns](https://codeberg.org/gondim/unbound-kindns)
+*   **GitHub**: [gondimcodes/unbound-kindns](https://github.com/gondimcodes/unbound-kindns)
