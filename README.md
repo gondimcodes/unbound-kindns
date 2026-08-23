@@ -1,8 +1,6 @@
-# Containerized Deployment - Recursive DNS (Unbound, FRR, Chrony, Zabbix Agent 2)
+# Containerized Deployment - Recursive DNS (Unbound, FRR, Chrony, Zabbix Agent 2) [![Donate with PayPal](https://img.shields.io/badge/Donate-PayPal-00457C?style=flat&logo=paypal&logoColor=white)](https://www.paypal.com/donate/?business=7LD8SPXNF2KH2&no_recurring=0&item_name=Sua+contribui%C3%A7%C3%A3o+ajuda+a+manter+meu+estoque+de+caf%C3%A9+em+dia+%3A%29&currency_code=BRL)
 
 ![unbound_kindns](unbound_kindns.png)
-
-[![Donate with PayPal](https://img.shields.io/badge/Donate-PayPal-00457C?style=flat&logo=paypal&logoColor=white)](https://www.paypal.com/donate/?business=7LD8SPXNF2KH2&no_recurring=0&item_name=Sua+contribui%C3%A7%C3%A3o+ajuda+a+manter+meu+estoque+de+caf%C3%A9+em+dia+%3A%29&currency_code=BRL)
 
 This repository contains the tools for deploying a Recursive DNS server (ISP Production Grade) using Docker and Docker Compose, optimizing performance, isolation, and ease of binary updates without compromising host state.
 
