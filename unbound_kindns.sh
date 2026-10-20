@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# unbound_kindns.sh - Recursive DNS and OSPF Routing Deploy in Docker
-# Installs Docker, Docker Compose, and configures Unbound (compiled), FRR, and Chrony.
+# unbound_kindns.sh - Recursive DNS and OSPF Routing Deploy in Docker or Podman
+# Installs Docker or Podman, Compose, and configures Unbound (compiled), FRR, and Chrony.
 # Author: Marcelo Gondim <gondim@gmail.com>
-# Version: 1.0.4
+# Version: 1.1.0
 
 # Loads system environment variables to preserve existing values
 if [ -f /etc/environment ]; then
@@ -19,6 +19,7 @@ CORES="4"         # CPU cores dedicated to Unbound (defines num-threads in local
 OSPF_INTERFACE="" # Physical interface for OSPF (e.g. ens20). If empty, disables Anycast (FRR/teste_dns)
 APPARMOR="0"      # 0 to disable (performance) or 1 to enable AppArmor
 MITIGATIONS="off" # off to turn CPU mitigations off (performance) or auto for automatic
+CONTAINER_ENGINE="${CONTAINER_ENGINE:-docker}" # Container engine: docker (default) or podman
 ZBX_HOSTNAME="${ZBX_HOSTNAME:-}" # Zabbix Hostname identifier (empty = uses OS hostname)
 CERT_DOMAIN="${CERT_DOMAIN:-doh.brasil.com.br}" # Let's Encrypt domain for DOH/DOT
 ZBX_SERVER_HOST="${ZBX_SERVER_HOST:-127.0.0.1}" # Zabbix Server IP
@@ -69,8 +70,8 @@ draw_banner() {
 :.......:::..::::..::........::::.......::::.......:::..::::..::........::::::::::::..::::..::....::..::::..::........:::..::::..:::......:::
 ============================================================================================================================================================
 EOF
-    printf "Hostname: %-25s | OSPF Interface: %-25s | Cores: %s\n" "${HOSTNAME}" "${OSPF_INTERFACE:-N/A}" "${CORES}"
-    printf "Version: %-26s | Author: %-33s | %s\n" "1.0.4" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
+    printf "Hostname: %-22s | Engine: %-8s | OSPF: %-15s | Cores: %s\n" "${HOSTNAME}" "${CONTAINER_ENGINE^^}" "${OSPF_INTERFACE:-N/A}" "${CORES}"
+    printf "Version: %-26s | Author: %-33s | %s\n" "1.1.0" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
     echo -e "============================================================================================================================================================${RESET}"
 }
 
@@ -106,14 +107,74 @@ EOF
     fi
 }
 
-# Validates command line parameters
-if [ -z "${1:-}" ]; then
-    log_error "Error: You must specify the HOSTNAME as the first script parameter!"
-    log_error "Usage: sudo $0 <HOSTNAME>"
+# Validates command line parameters and options
+HOSTNAME=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --engine|-e)
+            if [ -n "${2:-}" ]; then
+                CONTAINER_ENGINE="${2,,}"
+                shift 2
+            else
+                log_error "Option $1 requires an argument (docker or podman)."
+                exit 1
+            fi
+            ;;
+        --engine=*)
+            CONTAINER_ENGINE="${1#*=}"
+            CONTAINER_ENGINE="${CONTAINER_ENGINE,,}"
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: sudo $0 [OPTIONS] <HOSTNAME>"
+            echo ""
+            echo "Options:"
+            echo "  -e, --engine <docker|podman>  Container engine to use (default: docker)"
+            echo "  -h, --help                    Show this help message"
+            echo ""
+            echo "Example:"
+            echo "  sudo $0 AMA-UNBOUND-01"
+            echo "  sudo $0 --engine podman AMA-UNBOUND-01"
+            exit 0
+            ;;
+        -*)
+            log_error "Unknown option: $1"
+            log_error "Usage: sudo $0 [-e docker|podman] <HOSTNAME>"
+            exit 1
+            ;;
+        *)
+            if [ -z "${HOSTNAME}" ]; then
+                HOSTNAME="$1"
+            else
+                log_warn "Ignoring extra argument: $1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [ -z "${HOSTNAME}" ]; then
+    log_error "Error: You must specify the HOSTNAME as a script parameter!"
+    log_error "Usage: sudo $0 [-e docker|podman] <HOSTNAME>"
     log_error "Example: sudo $0 AMA-UNBOUND-01"
+    log_error "Example: sudo $0 --engine podman AMA-UNBOUND-01"
     exit 1
 fi
-HOSTNAME="$1"
+
+if [ "${CONTAINER_ENGINE}" != "docker" ] && [ "${CONTAINER_ENGINE}" != "podman" ]; then
+    log_warn "Unknown engine '${CONTAINER_ENGINE}'. Defaulting to 'docker'."
+    CONTAINER_ENGINE="docker"
+fi
+
+if [ "${CONTAINER_ENGINE}" = "podman" ]; then
+    VOL_BASE="/var/lib/containers/storage/volumes"
+    CTR_CMD="podman"
+    COMPOSE_CMD="podman compose"
+else
+    VOL_BASE="/var/lib/docker/volumes"
+    CTR_CMD="docker"
+    COMPOSE_CMD="docker compose"
+fi
 
 if [ -z "${ZBX_HOSTNAME}" ]; then
     ZBX_HOSTNAME="${HOSTNAME}"
@@ -477,14 +538,52 @@ setup_docker_dns() {
     fi
 }
 
-setup_docker_volumes() {
-    log_info "Creating named Docker volumes..."
-    docker volume create chrony_config &>/dev/null || true
-    docker volume create chrony_lib &>/dev/null || true
-    docker volume create frr_config &>/dev/null || true
-    docker volume create unbound_config &>/dev/null || true
-    docker volume create unbound_lib &>/dev/null || true
-    docker volume create zabbix_agent2_config &>/dev/null || true
+install_podman() {
+    if command -v podman &>/dev/null && podman compose version &>/dev/null; then
+        systemctl enable --now podman.socket 2>/dev/null || true
+        ln -sf /run/podman/podman.sock /var/run/docker.sock 2>/dev/null || true
+        log_success "Podman and Podman Compose are already installed."
+        return
+    fi
+
+    log_info "Installing prerequisite dependencies..."
+    apt-get update
+    apt-get install -y ca-certificates curl gnupg lsb-release
+
+    log_info "Installing Podman, Podman Compose and native tools from official repositories..."
+    apt-get install -y podman podman-compose catatonit buildah
+
+    log_info "Enabling and starting Podman API socket (Docker API compatibility)..."
+    systemctl enable --now podman.socket
+    ln -sf /run/podman/podman.sock /var/run/docker.sock 2>/dev/null || true
+
+    mkdir -p /etc/containers/containers.conf.d
+    cat << 'EOF' > /etc/containers/containers.conf.d/01-compose.conf
+[engine]
+compose_warning_logs = false
+EOF
+
+    log_success "Podman, Podman Compose and podman.socket successfully configured."
+}
+
+install_container_engine() {
+    if [ "${CONTAINER_ENGINE}" = "podman" ]; then
+        install_podman
+    else
+        install_docker
+        setup_docker_dns
+    fi
+}
+
+setup_container_volumes() {
+    log_info "Creating named volumes for engine (${CONTAINER_ENGINE})..."
+    ${CTR_CMD} volume create chrony_config &>/dev/null || true
+    ${CTR_CMD} volume create chrony_lib &>/dev/null || true
+    ${CTR_CMD} volume create frr_config &>/dev/null || true
+    ${CTR_CMD} volume create unbound_config &>/dev/null || true
+    ${CTR_CMD} volume create unbound_lib &>/dev/null || true
+    ${CTR_CMD} volume create zabbix_agent2_config &>/dev/null || true
+    log_success "Volumes for engine (${CONTAINER_ENGINE}) created successfully."
 }
 
 setup_chrony() {
@@ -524,7 +623,7 @@ RUN apk add --no-cache chrony
 ENTRYPOINT ["/usr/sbin/chronyd", "-d", "-s"]
 EOF
 
-    local config_dir="/var/lib/docker/volumes/chrony_config/_data"
+    local config_dir="${VOL_BASE}/chrony_config/_data"
     mkdir -p "${config_dir}/sources.d" "${config_dir}/conf.d"
 
     # chrony.conf
@@ -596,7 +695,7 @@ volumes:
     external: true
 EOF
 
-    local config_dir="/var/lib/docker/volumes/frr_config/_data"
+    local config_dir="${VOL_BASE}/frr_config/_data"
     mkdir -p "${config_dir}"
 
     # daemons
@@ -863,8 +962,8 @@ ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/usr/sbin/unbound", "-d", "-c", "/etc/unbound/unbound.conf"]
 EOF
 
-    local config_dir="/var/lib/docker/volumes/unbound_config/_data"
-    local lib_dir="/var/lib/docker/volumes/unbound_lib/_data"
+    local config_dir="${VOL_BASE}/unbound_config/_data"
+    local lib_dir="${VOL_BASE}/unbound_lib/_data"
     mkdir -p "${config_dir}/unbound.conf.d"
     mkdir -p "${lib_dir}"
 
@@ -1013,14 +1112,14 @@ EOF
     fi
 
     # Adjusts permissions of the unbound user (UID/GID 88) of the container
-    local lib_dir="/var/lib/docker/volumes/unbound_lib/_data"
+    local lib_dir="${VOL_BASE}/unbound_lib/_data"
     mkdir -p "${lib_dir}"
     chown -R 88:88 "${config_dir}"
     chown -R 88:88 "${lib_dir}" 2>/dev/null || true
 
     # Configuração de Logrotate para o Unbound Containerizado no Host
     log_info "Configuring logrotate for Unbound on host..."
-    cat << 'EOF' > /etc/logrotate.d/unbound
+    cat << EOF > /etc/logrotate.d/unbound
 /var/log/unbound/unbound.log {
     rotate 5
     weekly
@@ -1030,7 +1129,7 @@ EOF
     delaycompress
     create 0640 88 88
     postrotate
-        docker exec unbound unbound-control log_reopen >/dev/null 2>&1 || true
+        ${CTR_CMD} exec unbound unbound-control log_reopen >/dev/null 2>&1 || true
     endscript
 }
 EOF
@@ -1080,7 +1179,7 @@ EOF
     fi
 
     # Ensures the volume data folder starts clean only if it is a new installation
-    local config_dir="/var/lib/docker/volumes/zabbix_agent2_config/_data"
+    local config_dir="${VOL_BASE}/zabbix_agent2_config/_data"
     if [ -d "${config_dir}" ] && [ ! -f "${config_dir}/zabbix_agent2.conf" ]; then
         rm -rf "${config_dir}"/*
     fi
@@ -1112,7 +1211,7 @@ setup_host_environment() {
     # 1. Zabbix Stats Sender (unboundSend.sh)
     cat << 'EOF' > /root/scripts/unboundSend.sh
 #!/bin/bash
-# Adapted for Docker
+# Adapted for Docker and Podman
 if [ -z ${1} ] || [ -z ${2} ] ; then
         echo "Usage: ./unboundSend.sh <ZABBIX_SERVER_IP> <HOST_NAME>"
         exit 1
@@ -1135,8 +1234,14 @@ if [ -f "${STATE_TS}" ]; then
     fi
 fi
 
+# Detects container engine (podman or docker)
+CTR="docker"
+if command -v podman &>/dev/null && podman ps --filter "name=unbound" --filter "status=running" 2>/dev/null | grep -q unbound; then
+    CTR="podman"
+fi
+
 # Collects statistics using stats_noreset from inside the container
-docker exec unbound unbound-control stats_noreset > ${FILE}
+${CTR} exec unbound unbound-control stats_noreset > ${FILE}
 echo "${NOW}" > "${STATE_TS}"
  
 TOTAL_NUM_QUERIES=$(cat ${FILE} | grep -w 'total.num.queries' | cut -d '=' -f2)
@@ -1250,7 +1355,7 @@ EOF
     if [ -n "${OSPF_INTERFACE}" ]; then
         cat << 'EOF' > /root/scripts/teste_dns.sh
 #!/usr/bin/env bash
-# Adapted for Docker
+# Adapted for Docker and Podman
 dominios_testar=(
 www.google.com
 www.terra.com.br
@@ -1265,35 +1370,41 @@ www.redhat.com
 )
 corte_taxa_falha=100
 
+# Detects container engine (podman or docker)
+CTR="docker"
+if command -v podman &>/dev/null && podman ps --filter "name=unbound" --filter "status=running" 2>/dev/null | grep -q unbound; then
+   CTR="podman"
+fi
+
 remove_ospf() {
-   habilitado="$(docker exec frr vtysh -c 'show run' | grep "LOOPBACKS")"
+   habilitado="$(${CTR} exec frr vtysh -c 'show run' | grep "LOOPBACKS")"
    if [ "$habilitado" != "" ]; then
-      docker exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no description' -c 'end' -c 'wr'
-      docker exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ip ospf area 0.0.0.0' -c 'end' -c 'wr'
-      docker exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ip ospf passive' -c 'end' -c 'wr'
-      docker exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ipv6 ospf6 area 0.0.0.0' -c 'end' -c 'wr'
-      docker exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ipv6 ospf6 passive' -c 'end' -c 'wr'
+      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no description' -c 'end' -c 'wr'
+      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ip ospf area 0.0.0.0' -c 'end' -c 'wr'
+      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ip ospf passive' -c 'end' -c 'wr'
+      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ipv6 ospf6 area 0.0.0.0' -c 'end' -c 'wr'
+      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ipv6 ospf6 passive' -c 'end' -c 'wr'
       echo "Server $HOSTNAME has died!" | /usr/local/sbin/telegram-notify --error --text - 2>/dev/null || true
    fi
 }
  
 adiciona_ospf() {
-   habilitado="$(docker exec frr vtysh -c 'show run' | grep "LOOPBACKS")"
+   habilitado="$(${CTR} exec frr vtysh -c 'show run' | grep "LOOPBACKS")"
    if [ "$habilitado" == "" ]; then
-      docker exec frr vtysh -c 'conf t' -c 'interface lo' -c 'description LOOPBACKS' -c 'end' -c 'wr'
-      docker exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ip ospf area 0.0.0.0' -c 'end' -c 'wr'
-      docker exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ip ospf passive' -c 'end' -c 'wr'
-      docker exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ipv6 ospf6 area 0.0.0.0' -c 'end' -c 'wr'
-      docker exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ipv6 ospf6 passive' -c 'end' -c 'wr'
+      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'description LOOPBACKS' -c 'end' -c 'wr'
+      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ip ospf area 0.0.0.0' -c 'end' -c 'wr'
+      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ip ospf passive' -c 'end' -c 'wr'
+      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ipv6 ospf6 area 0.0.0.0' -c 'end' -c 'wr'
+      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ipv6 ospf6 passive' -c 'end' -c 'wr'
       echo "Server $HOSTNAME is back online!" | /usr/local/sbin/telegram-notify --success --text - 2>/dev/null || true
    fi
 }
 
-if ! docker ps --filter "name=unbound" --filter "status=running" | grep -q unbound; then
+if ! ${CTR} ps --filter "name=unbound" --filter "status=running" | grep -q unbound; then
    echo "Server $HOSTNAME DNS has died, but trying to start it!" | /usr/local/sbin/telegram-notify --error --text - 2>/dev/null || true
-   docker restart unbound
+   ${CTR} restart unbound
    sleep 3
-   if ! docker ps --filter "name=unbound" --filter "status=running" | grep -q unbound; then
+   if ! ${CTR} ps --filter "name=unbound" --filter "status=running" | grep -q unbound; then
       remove_ospf
       exit
    fi
@@ -1304,7 +1415,7 @@ qt_falhas=0
 qt_total="${#dominios_testar[@]}"
 for site in "${dominios_testar[@]}"
 do
-  docker exec unbound unbound-control flush $site &> /dev/null
+  ${CTR} exec unbound unbound-control flush $site &> /dev/null
   resolver="127.0.0.1"
   host $site $resolver &> /dev/null
   if [ $? -ne 0 ]; then
@@ -1346,43 +1457,43 @@ EOF
 }
 
 start_services() {
-    log_info "Starting services via Docker Compose..."
+    log_info "Starting services via ${CONTAINER_ENGINE^^} Compose..."
     
     # Chrony
     cd /usr/local/src/chrony
-    docker compose down 2>/dev/null || true
-    docker compose up -d --build
+    ${COMPOSE_CMD} down 2>/dev/null || true
+    ${COMPOSE_CMD} up -d --build
     
     # FRR
     if [ -n "${OSPF_INTERFACE}" ]; then
         cd /usr/local/src/frr
-        docker compose down 2>/dev/null || true
-        docker compose up -d
+        ${COMPOSE_CMD} down 2>/dev/null || true
+        ${COMPOSE_CMD} up -d
     fi
     
     # Unbound
     cd /usr/local/src/unbound
-    docker compose down 2>/dev/null || true
+    ${COMPOSE_CMD} down 2>/dev/null || true
     
     # Generates remote control keys and root DNSSEC key if they do not exist in the volume before starting the service
-    local unbound_vol_dir="/var/lib/docker/volumes/unbound_config/_data"
-    local unbound_lib_dir="/var/lib/docker/volumes/unbound_lib/_data"
+    local unbound_vol_dir="${VOL_BASE}/unbound_config/_data"
+    local unbound_lib_dir="${VOL_BASE}/unbound_lib/_data"
     
     if [[ ! -f "${unbound_vol_dir}/unbound_control.key" ]]; then
         log_info "Building Unbound image..."
-        docker compose build
+        ${COMPOSE_CMD} build
         log_info "Generating unbound-control authentication keys in temporary container..."
-        docker compose run --rm --entrypoint unbound-control-setup unbound -d /etc/unbound || true
+        ${COMPOSE_CMD} run --rm --entrypoint unbound-control-setup unbound -d /etc/unbound || true
         chown -R 88:88 "${unbound_vol_dir}"
     fi
 
-    docker compose up -d --build
+    ${COMPOSE_CMD} up -d --build
 
 
     # Zabbix Agent 2
     cd /usr/local/src/zabbix-agent2
-    docker compose down 2>/dev/null || true
-    docker compose up -d
+    ${COMPOSE_CMD} down 2>/dev/null || true
+    ${COMPOSE_CMD} up -d
     
     log_success "All services started successfully!"
 }
@@ -1392,9 +1503,8 @@ check_root
 setup_hostname
 setup_grub_tuning
 setup_kernel_tuning
-install_docker
-setup_docker_dns
-setup_docker_volumes
+install_container_engine
+setup_container_volumes
 setup_chrony
 if [ -n "${OSPF_INTERFACE}" ]; then
     setup_frr

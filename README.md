@@ -2,20 +2,25 @@
 
 ![unbound_kindns](unbound_kindns.png)
 
-This repository contains the tools for deploying a Recursive DNS server (ISP Production Grade) using Docker and Docker Compose, optimizing performance, isolation, and ease of binary updates without compromising host state.
+This repository contains the tools for deploying a Recursive DNS server (ISP Production Grade) using **Docker** or **Podman** (Docker Compose / Podman Compose), optimizing performance, isolation, and ease of binary updates without compromising host state.
+
+Starting with **v1.1.0**, the deployment script is fully agnostic, allowing you to choose between standard **Docker** or native daemonless **Podman** via command line flag (`--engine podman` or `--engine docker`).
 
 ---
 
 ## Requirements
 
 *   **Operating System**: **Debian 13 (Trixie)** or newer.
-*   **Privileges**: Root access (`sudo`) is required to run host sysctl/limit tuning, install packages, and configure the Docker daemon.
+*   **Container Engine**: **Docker** (Docker CE + Compose Plugin) or **Podman** (Podman + Podman Compose + buildah). The script installs the chosen engine automatically from official repositories if not already present.
+*   **Privileges**: Root access (`sudo`) is required to run host sysctl/limit tuning, install packages, and configure container daemons and sockets.
 
 ---
 
 ## Deployment Structure
 
-The script installs and configures build and orchestration files in `/usr/local/src/`, while persistent configurations and dynamic data are stored directly inside **Docker Named Volumes** under `/var/lib/docker/volumes/`:
+The script installs and configures build and orchestration files in `/usr/local/src/`, while persistent configurations and dynamic data are stored directly inside **Engine Named Volumes**:
+* **Docker Volumes Path**: `/var/lib/docker/volumes/<volume_name>/_data/`
+* **Podman Volumes Path**: `/var/lib/containers/storage/volumes/<volume_name>/_data/`
 
 ### Orchestration Tree (`/usr/local/src/`)
 ```text
@@ -33,9 +38,9 @@ The script installs and configures build and orchestration files in `/usr/local/
     └── entrypoint.sh
 ```
 
-### Configuration and Data Tree in Volumes (`/var/lib/docker/volumes/`)
+### Configuration and Data Tree in Named Volumes
 ```text
-/var/lib/docker/volumes/
+<VOLUME_BASE>/
 ├── chrony_config/_data/
 │   ├── chrony.conf
 │   ├── sources.d/
@@ -93,15 +98,16 @@ In addition to the containers, the installer configures and optimizes the Debian
     *   Installation and activation of `irqbalance` on the host to distribute network card processing among CPU cores.
     *   Installation of utilities like `grc`, `dnstop`, `tcpdump`, `expect`, and `logwatch`.
 5.  **Grub Tuning (Disabling Security for Performance)**:
-    *   **`APPARMOR="0"`**: Default disablement of AppArmor to avoid profile conflicts with Docker volumes and networks.
+    *   **`APPARMOR="0"`**: Default disablement of AppArmor to avoid profile conflicts with container volumes and networks.
     *   **`MITIGATIONS="off"`**: Default disablement of CPU silicon mitigations (direct processing gain).
 
 ---
 
 ## Configuration Settings
 
-Before running the installer script `unbound_kindns.sh`, you should review and adjust the deploy settings defined at the top of the script:
+Before running the installer script `unbound_kindns.sh`, you can review and adjust the deploy settings defined at the top of the script (or override them via CLI options):
 
+*   **`CONTAINER_ENGINE`**: Container runtime to deploy. Options: `docker` (default) or `podman`. Can also be passed via `-e <engine>` / `--engine <engine>`.
 *   **`CORES`**: Number of CPU cores dedicated to Unbound (defines `num-threads` in Unbound's configuration, default: `4`).
 *   **`OSPF_INTERFACE`**: Physical network interface for OSPF routing (e.g. `ens20`). If left empty, OSPF/Anycast deployment (FRR container, health checks, cron job) is skipped (running in stand-alone mode).
 *   **`APPARMOR`**: Set to `0` to disable AppArmor for raw performance, or `1` to keep it enabled.
@@ -116,12 +122,23 @@ Before running the installer script `unbound_kindns.sh`, you should review and a
 
 ## How to Install and Run
 
-1.  Access the script and customize the variables at the top if necessary (`APPARMOR`, `MITIGATIONS`).
-2.  Run the installer passing the server **Hostname** as a required argument:
-
+### 1. Default Installation with Docker
 ```bash
 sudo ./unbound_kindns.sh <HOSTNAME>
 ```
+
+### 2. Installation with Podman
+```bash
+sudo ./unbound_kindns.sh --engine podman <HOSTNAME>
+```
+*(or using short flag: `sudo ./unbound_kindns.sh -e podman <HOSTNAME>`)*
+
+### Command-line Options Reference:
+| Option | Description |
+| :--- | :--- |
+| `-e, --engine <docker\|podman>` | Select container engine (`docker` or `podman`). Default: `docker`. |
+| `-h, --help` | Display usage instructions and options. |
+| `<HOSTNAME>` | **Required.** Hostname to set on the server and use in monitoring. |
 
 *Note: Rebooting the server after installation will be required only for the Grub flags (AppArmor and Mitigations) and new sysctl changes to take full effect.*
 
@@ -129,63 +146,80 @@ sudo ./unbound_kindns.sh <HOSTNAME>
 
 ## How to Alter Configurations and Restart Containers
 
-All configuration changes must be made in the mapped host files. O installer will **never** overwrite custom configuration files that already exist in directories.
+All configuration changes must be made in the mapped host files. The installer will **never** overwrite custom configuration files that already exist in directories.
+
+> **Tip:** Replace `docker` with `podman` in the commands below if you chose the Podman engine during installation.
 
 ### 1. Unbound
-*   **Files**: `/var/lib/docker/volumes/unbound_config/_data/unbound.conf` and subdirectories `/unbound.conf.d/`.
+*   **Files**: `<VOL_BASE>/unbound_config/_data/unbound.conf` and subdirectories under `/unbound.conf.d/`.
 *   **How to check syntax without taking down the service**:
     ```bash
     docker exec -it unbound unbound-checkconf /etc/unbound/unbound.conf
+    # or with Podman:
+    podman exec -it unbound unbound-checkconf /etc/unbound/unbound.conf
     ```
 *   **How to reload configurations keeping cache in memory**:
     ```bash
     docker exec -it unbound unbound-control reload_keep_cache
+    # or with Podman:
+    podman exec -it unbound unbound-control reload_keep_cache
     ```
 *   **How to restart completely**:
     ```bash
     cd /usr/local/src/unbound && docker compose restart unbound
+    # or with Podman:
+    cd /usr/local/src/unbound && podman compose restart unbound
     ```
 
 ### 2. FRRouting (FRR)
-*   **Files**: `/var/lib/docker/volumes/frr_config/_data/frr.conf` and `/var/lib/docker/volumes/frr_config/_data/daemons`.
+*   **Files**: `<VOL_BASE>/frr_config/_data/frr.conf` and `<VOL_BASE>/frr_config/_data/daemons`.
 *   **How to change dynamically via vtysh console (recommended)**:
     ```bash
     docker exec -it frr vtysh
-    # Make changes...
+    # or with Podman:
+    podman exec -it frr vtysh
+
+    # Inside vtysh:
     frr-host# write memory (or wr)
     ```
     *Note: Thanks to chown `92:92` and permissions `750/640` applied to the folder, the `wr` command will persist changes directly on the host.*
 *   **How to restart completely**:
     ```bash
     cd /usr/local/src/frr && docker compose restart frr
+    # or with Podman:
+    cd /usr/local/src/frr && podman compose restart frr
     ```
 
 ### 3. Chrony (NTP)
-*   **Files**: `/var/lib/docker/volumes/chrony_config/_data/chrony.conf` and directories under `/conf.d/` and `/sources.d/`.
+*   **Files**: `<VOL_BASE>/chrony_config/_data/chrony.conf` and directories under `/conf.d/` and `/sources.d/`.
 *   **How to restart after changes**:
     ```bash
     cd /usr/local/src/chrony && docker compose restart chrony
+    # or with Podman:
+    cd /usr/local/src/chrony && podman compose restart chrony
     ```
 
 ### 4. Zabbix Agent 2
-*   **Files**: `/var/lib/docker/volumes/zabbix_agent2_config/_data/zabbix_agent2.conf`.
+*   **Files**: `<VOL_BASE>/zabbix_agent2_config/_data/zabbix_agent2.conf`.
 *   **How to restart after changes**:
     ```bash
     cd /usr/local/src/zabbix-agent2 && docker compose restart zabbix-agent2
+    # or with Podman:
+    cd /usr/local/src/zabbix-agent2 && podman compose restart zabbix-agent2
     ```
 
 ---
 
 ## Updating the System (Individual Upgrades)
 
-If you need to update the Docker image of a service, compile the latest code version, or reapply host environment variables independently (without running the main installer script completely), use the following commands in each service directory:
+If you need to update the container image of a service, compile the latest code version, or reapply host environment variables independently (without running the main installer script completely), use the following commands in each service directory (using `docker compose` or `podman compose` depending on your engine):
 
 ### 1. Unbound (DNS Resolver)
 Since the Unbound image is compiled locally and configured to fetch the latest stable version from NLnet Labs, force recompilation by running:
 ```bash
 cd /usr/local/src/unbound
-docker compose down
-docker compose up -d --build
+docker compose down             # or: podman compose down
+docker compose up -d --build    # or: podman compose up -d --build
 ```
 
 ### 2. Zabbix Agent 2
@@ -227,7 +261,7 @@ dig @127.0.0.1 google.com
 dig @::1 google.com
 
 # Inspect flags and active compiled modules in Alpine
-docker exec -it unbound unbound -V
+docker exec -it unbound unbound -V      # or: podman exec -it unbound unbound -V
 
 # View real-time logs
 tail -f /var/log/unbound/unbound.log
@@ -268,13 +302,14 @@ nc -zv ::1 10050
 
 ## Troubleshooting (Common Issues Resolutions)
 
-### 1. DNS Errors / Name Resolution during `docker build` (transient error)
+### 1. DNS Errors / Name Resolution during build (transient error)
 *   **Symptom**: When compiling images (like `unbound`), the following error occurs:
     `WARNING: fetching https://.../APKINDEX.tar.gz: DNS: transient error (try again later)`
-*   **Cause**: The Debian host uses local recursive DNS (`127.0.0.1`). The Docker Builder inherits this resolv.conf and attempts to fetch DNS inside the container on its own internal loopback, where nothing responds.
-*   **Resolution**: The deployment script automatically generates the `/etc/docker/daemon.json` file pointing to public fallback DNS (`1.1.1.1`, `8.8.8.8`). Make sure the docker daemon was restarted:
+*   **Cause**: The Debian host uses local recursive DNS (`127.0.0.1`). The Docker/Podman builder inherits this resolv.conf and attempts to fetch DNS inside the build container on its own internal loopback, where nothing responds.
+*   **Resolution**: The deployment script automatically generates the `/etc/docker/daemon.json` file pointing to public fallback DNS (`1.1.1.1`, `8.8.8.8`) for Docker, and enables `podman.socket` with host network resolution for Podman. Make sure the container service is active:
     ```bash
-    sudo systemctl restart docker
+    sudo systemctl restart docker        # If using Docker
+    sudo systemctl restart podman.socket # If using Podman
     ```
 
 ### 2. Failure in `write memory` (`wr`) command of FRR (vtysh)
@@ -282,9 +317,15 @@ nc -zv ::1 10050
 *   **Cause**: Folder configuration permissions on the host belong to an incorrect user.
 *   **Resolution**: Re-establish appropriate permissions on the host (owner `92:92` corresponding to the UID/GID of the internal `frr` user in the container):
     ```bash
+    # For Docker:
     sudo chown -R 92:92 /var/lib/docker/volumes/frr_config/_data
     sudo chmod 750 /var/lib/docker/volumes/frr_config/_data
     sudo chmod 640 /var/lib/docker/volumes/frr_config/_data/*
+
+    # For Podman:
+    sudo chown -R 92:92 /var/lib/containers/storage/volumes/frr_config/_data
+    sudo chmod 750 /var/lib/containers/storage/volumes/frr_config/_data
+    sudo chmod 640 /var/lib/containers/storage/volumes/frr_config/_data/*
     ```
 
 ### 3. Permission Denied on Unbound logs
