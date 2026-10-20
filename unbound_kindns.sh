@@ -542,7 +542,6 @@ install_podman() {
     if command -v podman &>/dev/null && podman compose version &>/dev/null; then
         systemctl enable --now podman.socket 2>/dev/null || true
         systemctl enable --now podman-restart.service 2>/dev/null || true
-        ln -sf /run/podman/podman.sock /var/run/docker.sock 2>/dev/null || true
         log_success "Podman and Podman Compose are already installed."
         return
     fi
@@ -557,7 +556,6 @@ install_podman() {
     log_info "Enabling and starting Podman API socket and auto-restart service..."
     systemctl enable --now podman.socket
     systemctl enable --now podman-restart.service
-    ln -sf /run/podman/podman.sock /var/run/docker.sock 2>/dev/null || true
 
     mkdir -p /etc/containers/containers.conf.d
     cat << 'EOF' > /etc/containers/containers.conf.d/01-compose.conf
@@ -1148,6 +1146,11 @@ setup_zabbix_agent2() {
     local base_dir="/usr/local/src/zabbix-agent2"
     mkdir -p "${base_dir}"
 
+    local engine_sock="/var/run/docker.sock"
+    if [ "${CONTAINER_ENGINE}" = "podman" ]; then
+        engine_sock="/run/podman/podman.sock"
+    fi
+
     # docker-compose.yml
     if [[ ! -f "${base_dir}/docker-compose.yml" ]]; then
         cat << EOF > "${base_dir}/docker-compose.yml"
@@ -1161,7 +1164,7 @@ services:
     user: root
     volumes:
       - zabbix_agent2_config:/etc/zabbix
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${engine_sock}:/var/run/docker.sock:ro
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /etc/localtime:/etc/localtime:ro
