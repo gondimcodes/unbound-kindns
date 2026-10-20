@@ -597,7 +597,6 @@ services:
   chrony:
     build:
       context: .
-      network: host
     container_name: chrony
     network_mode: host
     restart: always
@@ -836,7 +835,6 @@ services:
   unbound:
     build:
       context: .
-      network: host
     container_name: unbound
     network_mode: host
     restart: always
@@ -1458,6 +1456,7 @@ EOF
 
 start_services() {
     log_info "Starting services via ${CONTAINER_ENGINE^^} Compose..."
+    export COMPOSE_BAKE=false
     
     # Chrony
     cd /usr/local/src/chrony
