@@ -541,6 +541,7 @@ setup_docker_dns() {
 install_podman() {
     if command -v podman &>/dev/null && podman compose version &>/dev/null; then
         systemctl enable --now podman.socket 2>/dev/null || true
+        systemctl enable --now podman-restart.service 2>/dev/null || true
         ln -sf /run/podman/podman.sock /var/run/docker.sock 2>/dev/null || true
         log_success "Podman and Podman Compose are already installed."
         return
@@ -550,11 +551,12 @@ install_podman() {
     apt-get update
     apt-get install -y ca-certificates curl gnupg lsb-release
 
-    log_info "Installing Podman, Podman Compose and native tools from official repositories..."
-    apt-get install -y podman podman-compose catatonit buildah
+    log_info "Installing Podman, Podman Compose, native tools and OCI runtimes (runc, crun)..."
+    apt-get install -y podman podman-compose catatonit buildah runc crun
 
-    log_info "Enabling and starting Podman API socket (Docker API compatibility)..."
+    log_info "Enabling and starting Podman API socket and auto-restart service..."
     systemctl enable --now podman.socket
+    systemctl enable --now podman-restart.service
     ln -sf /run/podman/podman.sock /var/run/docker.sock 2>/dev/null || true
 
     mkdir -p /etc/containers/containers.conf.d
@@ -563,7 +565,7 @@ install_podman() {
 compose_warning_logs = false
 EOF
 
-    log_success "Podman, Podman Compose and podman.socket successfully configured."
+    log_success "Podman, Podman Compose, runtimes and services successfully configured."
 }
 
 install_container_engine() {
