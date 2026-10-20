@@ -1,0 +1,118 @@
+name: Test Installer & Service Health
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test-installer:
+    name: Install & Verify (${{ matrix.engine }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Free Port 53 & Configure DNS Fallback
+        run: |
+          echo "=== Disabling systemd-resolved to free port 53 ==="
+          sudo systemctl stop systemd-resolved || true
+          sudo systemctl disable systemd-resolved || true
+          sudo rm -f /etc/resolv.conf
+          echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
+          echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf
+
+      - name: Install Test Prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dnsutils netcat-traditional
+
+      - name: Run unbound_kindns.sh (${{ matrix.engine }})
+        run: |
+          echo "=== Executing unbound_kindns.sh with engine ${{ matrix.engine }} ==="
+          chmod +x unbound_kindns.sh
+          sudo ./unbound_kindns.sh --engine ${{ matrix.engine }} CI-TEST-NODE < /dev/null
+
+      - name: Wait for Containers to Settle
+        run: |
+          echo "=== Waiting 15s for daemons to finish bootstrap ==="
+          sleep 15
+
+      - name: Validate Container Engine Status
+        run: |
+          CTR="${{ matrix.engine }}"
+          echo "=== Inspecting running containers via $CTR ==="
+          sudo $CTR ps
+          
+          echo "=== Checking container health ==="
+          sudo $CTR ps --filter "name=unbound" --filter "status=running" | grep -q unbound || (echo "Unbound container is NOT running!" && exit 1)
+          sudo $CTR ps --filter "name=chrony" --filter "status=running" | grep -q chrony || (echo "Chrony container is NOT running!" && exit 1)
+          sudo $CTR ps --filter "name=zabbix-agent2" --filter "status=running" | grep -q zabbix-agent2 || (echo "Zabbix Agent 2 container is NOT running!" && exit 1)
+          echo "All expected containers are running successfully!"
+
+      - name: Validate Unbound Syntax and Control
+        run: |
+          CTR="${{ matrix.engine }}"
+          echo "=== Checking Unbound configuration syntax ==="
+          sudo $CTR exec unbound unbound-checkconf /etc/unbound/unbound.conf
+          
+          echo "=== Checking Unbound control channel ==="
+          sudo $CTR exec unbound unbound-control status
+
+      - name: Test DNS Recursion Query (127.0.0.1:53)
+        run: |
+          echo "=== Testing local DNS resolution and recursion ==="
+          sleep 3
+          dig @127.0.0.1 -p 53 google.com +time=5 +tries=2
+          
+          echo "=== Asserting NOERROR response ==="
+          DIG_OUT=$(dig @127.0.0.1 -p 53 google.com +time=5 +tries=2)
+          echo "$DIG_OUT" | grep -q "status: NOERROR" || (echo "DNS query failed or did not return NOERROR!" && exit 1)
+          echo "DNS recursion test PASSED!"
+
+      - name: Validate Chrony NTP Service
+        run: |
+          CTR="${{ matrix.engine }}"
+          echo "=== Checking Chrony tracking ==="
+          sudo $CTR exec chrony chronyc tracking || true
+          sudo $CTR exec chrony chronyc activity || true
+
+      - name: Validate Zabbix Agent 2
+        run: |
+          CTR="${{ matrix.engine }}"
+          echo "=== Testing Zabbix Agent 2 internal ping ==="
+          sudo $CTR exec zabbix-agent2 zabbix_agent2 -t agent.ping
+          
+          echo "=== Testing host port 10050 ==="
+          nc -zv 127.0.0.1 10050
+
+      - name: Test Host Helper Scripts
+        run: |
+          echo "=== Testing unboundSend.sh stats collection ==="
+          sudo /root/scripts/unboundSend.sh 127.0.0.1 CI-TEST-NODE
+          test -f /var/tmp/dump_unbound_control_stats.txt || (echo "Dump stats file was not generated!" && exit 1)
+          echo "unboundSend.sh completed successfully!"
+
+      - name: Dump Container Logs on Failure
+        if: failure()
+        run: |
+          CTR="${{ matrix.engine }}"
+          echo "=== DUMP: Unbound Logs ==="
+          sudo $CTR logs unbound || true
+          echo "=== DUMP: Chrony Logs ==="
+          sudo $CTR logs chrony || true
+          echo "=== DUMP: Zabbix Agent 2 Logs ==="
+          sudo $CTR logs zabbix-agent2 || true
+          if [ -f /var/log/unbound/unbound.log ]; then
+            echo "=== DUMP: /var/log/unbound/unbound.log ==="
+            sudo cat /var/log/unbound/unbound.log || true
+          fi
