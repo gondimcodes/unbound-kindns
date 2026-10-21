@@ -2,7 +2,7 @@
 # unbound_kindns.sh - Recursive DNS and OSPF Routing Deploy in Docker or Podman
 # Installs Docker or Podman, Compose, and configures Unbound (compiled), FRR, and Chrony.
 # Author: Marcelo Gondim <gondim@gmail.com>
-# Version: 1.1.0
+# Version: 1.1.1
 
 # Loads system environment variables to preserve existing values
 if [ -f /etc/environment ]; then
@@ -71,7 +71,7 @@ draw_banner() {
 ============================================================================================================================================================
 EOF
     printf "Hostname: %-22s | Engine: %-8s | OSPF: %-15s | Cores: %s\n" "${HOSTNAME}" "${CONTAINER_ENGINE^^}" "${OSPF_INTERFACE:-N/A}" "${CORES}"
-    printf "Version: %-26s | Author: %-33s | %s\n" "1.1.0" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
+    printf "Version: %-26s | Author: %-33s | %s\n" "1.1.1" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
     echo -e "============================================================================================================================================================${RESET}"
 }
 
@@ -199,7 +199,14 @@ setup_hostname() {
 ff02::1 ip6-allnodes
 ff02::2 ip6-allrouters
 EOF
-    log_success "Hostname and hosts configured on the host."
+
+    log_info "Configuring public DNS resolvers in /etc/resolv.conf..."
+    cat << EOF > /etc/resolv.conf
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+nameserver 2001:4860:4860::8888
+EOF
+    log_success "Hostname, hosts and resolv.conf configured on the host."
 }
 
 setup_kernel_tuning() {
@@ -539,18 +546,38 @@ setup_docker_dns() {
 }
 
 install_podman() {
+    local apparmor_conf=""
+    if [ "${APPARMOR}" = "0" ]; then
+        apparmor_conf=$'\napparmor_profile = "unconfined"'
+    fi
+
+    write_configs() {
+        mkdir -p /etc/containers/registries.conf.d /etc/containers/containers.conf.d
+        echo 'unqualified-search-registries = ["docker.io", "quay.io"]' > /etc/containers/registries.conf
+        echo 'unqualified-search-registries = ["docker.io", "quay.io"]' > /etc/containers/registries.conf.d/01-registries.conf
+        cat << EOF > /etc/containers/containers.conf
+[engine]
+compose_warning_logs = false
+runtime = "crun"
+
+[containers]${apparmor_conf}
+dns_servers = ["1.1.1.1", "8.8.8.8"]
+EOF
+        cat << EOF > /etc/containers/containers.conf.d/01-compose.conf
+[engine]
+compose_warning_logs = false
+runtime = "crun"
+
+[containers]${apparmor_conf}
+dns_servers = ["1.1.1.1", "8.8.8.8"]
+EOF
+    }
+
     if command -v podman &>/dev/null && podman compose version &>/dev/null; then
         systemctl enable --now podman.socket 2>/dev/null || true
         systemctl enable --now podman-restart.service 2>/dev/null || true
-        mkdir -p /etc/containers/registries.conf.d /etc/containers/containers.conf.d
-        cat << 'EOF' > /etc/containers/registries.conf.d/01-registries.conf
-unqualified-search-registries = ["docker.io", "quay.io"]
-EOF
-        cat << 'EOF' > /etc/containers/containers.conf.d/01-compose.conf
-[engine]
-compose_warning_logs = false
-EOF
-        log_success "Podman and Podman Compose are already installed."
+        write_configs
+        log_success "Podman and Podman Compose are already installed and configured."
         return
     fi
 
@@ -565,14 +592,8 @@ EOF
     systemctl enable --now podman.socket
     systemctl enable --now podman-restart.service
 
-    mkdir -p /etc/containers/registries.conf.d /etc/containers/containers.conf.d
-    cat << 'EOF' > /etc/containers/registries.conf.d/01-registries.conf
-unqualified-search-registries = ["docker.io", "quay.io"]
-EOF
-    cat << 'EOF' > /etc/containers/containers.conf.d/01-compose.conf
-[engine]
-compose_warning_logs = false
-EOF
+    log_info "Configuring container registries and Podman preferences..."
+    write_configs
 
     log_success "Podman, Podman Compose, runtimes and services successfully configured."
 }
@@ -595,6 +616,15 @@ setup_container_volumes() {
     ${CTR_CMD} volume create unbound_lib &>/dev/null || true
     ${CTR_CMD} volume create zabbix_agent2_config &>/dev/null || true
     log_success "Volumes for engine (${CONTAINER_ENGINE}) created successfully."
+}
+
+apply_apparmor_compose_tuning() {
+    local compose_file="$1"
+    if [ "${APPARMOR}" = "0" ] && [ -f "${compose_file}" ]; then
+        if ! grep -q "apparmor=unconfined" "${compose_file}"; then
+            sed -i '/restart: always/a \    security_opt:\n      - apparmor=unconfined' "${compose_file}"
+        fi
+    fi
 }
 
 setup_chrony() {
@@ -625,6 +655,7 @@ volumes:
   chrony_lib:
     external: true
 EOF
+    apply_apparmor_compose_tuning "${base_dir}/docker-compose.yml"
 
     # Dockerfile
     cat << 'EOF' > "${base_dir}/Dockerfile"
@@ -704,6 +735,7 @@ volumes:
   frr_config:
     external: true
 EOF
+    apply_apparmor_compose_tuning "${base_dir}/docker-compose.yml"
 
     local config_dir="${VOL_BASE}/frr_config/_data"
     mkdir -p "${config_dir}"
@@ -864,6 +896,7 @@ volumes:
   unbound_lib:
     external: true
 EOF
+    apply_apparmor_compose_tuning "${base_dir}/docker-compose.yml"
 
     # Dockerfile
     cat << 'EOF' > "${base_dir}/Dockerfile"
@@ -1192,6 +1225,7 @@ volumes:
   zabbix_agent2_config:
     external: true
 EOF
+    apply_apparmor_compose_tuning "${base_dir}/docker-compose.yml"
 
     # Ensures the volume data folder starts clean only if it is a new installation
     local config_dir="${VOL_BASE}/zabbix_agent2_config/_data"
@@ -1251,7 +1285,7 @@ fi
 
 # Detects container engine (podman or docker)
 CTR="docker"
-if command -v podman &>/dev/null && podman ps --filter "name=unbound" --filter "status=running" 2>/dev/null | grep -q unbound; then
+if [ -S /run/podman/podman.sock ] || { command -v podman &>/dev/null && podman ps -a --filter "name=unbound" 2>/dev/null | grep -q unbound; }; then
     CTR="podman"
 fi
 
@@ -1387,7 +1421,7 @@ corte_taxa_falha=100
 
 # Detects container engine (podman or docker)
 CTR="docker"
-if command -v podman &>/dev/null && podman ps --filter "name=unbound" --filter "status=running" 2>/dev/null | grep -q unbound; then
+if [ -S /run/podman/podman.sock ] || { command -v podman &>/dev/null && podman ps -a --filter "name=unbound" 2>/dev/null | grep -q unbound; }; then
    CTR="podman"
 fi
 
@@ -1471,6 +1505,46 @@ EOF
     log_success "Environment structure and helper scripts successfully configured."
 }
 
+build_images() {
+    log_info "Building and preparing container images (${CONTAINER_ENGINE})..."
+    export COMPOSE_BAKE=false
+
+    # Chrony
+    log_info "Building Chrony image..."
+    cd /usr/local/src/chrony
+    if [ "${CONTAINER_ENGINE}" = "podman" ]; then
+        podman build --network host --dns 1.1.1.1 --dns 8.8.8.8 -t chrony_chrony:latest -t localhost/chrony_chrony:latest .
+    else
+        ${COMPOSE_CMD} build
+    fi
+
+    # Unbound
+    log_info "Building Unbound image..."
+    cd /usr/local/src/unbound
+    if [ "${CONTAINER_ENGINE}" = "podman" ]; then
+        podman build --network host --dns 1.1.1.1 --dns 8.8.8.8 -t unbound_unbound:latest -t localhost/unbound_unbound:latest .
+    else
+        ${COMPOSE_CMD} build
+    fi
+
+    # Generates remote control keys and root DNSSEC key if they do not exist in the volume before starting services
+    local unbound_vol_dir="${VOL_BASE}/unbound_config/_data"
+    local unbound_lib_dir="${VOL_BASE}/unbound_lib/_data"
+    if [[ ! -f "${unbound_vol_dir}/unbound_control.key" ]]; then
+        log_info "Generating unbound-control authentication keys in temporary container..."
+        ${COMPOSE_CMD} run --rm --entrypoint unbound-control-setup unbound -d /etc/unbound || true
+        chown -R 88:88 "${unbound_vol_dir}"
+    fi
+
+    if [[ ! -f "${unbound_lib_dir}/root.key" ]]; then
+        log_info "Initializing root.key for DNSSEC via unbound-anchor in temporary container..."
+        ${COMPOSE_CMD} run --rm --entrypoint unbound-anchor unbound -a /var/lib/unbound/root.key || true
+        chown -R 88:88 "${unbound_lib_dir}" 2>/dev/null || true
+    fi
+
+    log_success "All container images built successfully."
+}
+
 start_services() {
     log_info "Starting services via ${CONTAINER_ENGINE^^} Compose..."
     export COMPOSE_BAKE=false
@@ -1478,7 +1552,7 @@ start_services() {
     # Chrony
     cd /usr/local/src/chrony
     ${COMPOSE_CMD} down 2>/dev/null || true
-    ${COMPOSE_CMD} up -d --build
+    ${COMPOSE_CMD} up -d
     
     # FRR
     if [ -n "${OSPF_INTERFACE}" ]; then
@@ -1490,21 +1564,7 @@ start_services() {
     # Unbound
     cd /usr/local/src/unbound
     ${COMPOSE_CMD} down 2>/dev/null || true
-    
-    # Generates remote control keys and root DNSSEC key if they do not exist in the volume before starting the service
-    local unbound_vol_dir="${VOL_BASE}/unbound_config/_data"
-    local unbound_lib_dir="${VOL_BASE}/unbound_lib/_data"
-    
-    if [[ ! -f "${unbound_vol_dir}/unbound_control.key" ]]; then
-        log_info "Building Unbound image..."
-        ${COMPOSE_CMD} build
-        log_info "Generating unbound-control authentication keys in temporary container..."
-        ${COMPOSE_CMD} run --rm --entrypoint unbound-control-setup unbound -d /etc/unbound || true
-        chown -R 88:88 "${unbound_vol_dir}"
-    fi
-
-    ${COMPOSE_CMD} up -d --build
-
+    ${COMPOSE_CMD} up -d
 
     # Zabbix Agent 2
     cd /usr/local/src/zabbix-agent2
@@ -1528,6 +1588,7 @@ fi
 setup_unbound
 setup_zabbix_agent2
 setup_host_environment
+build_images
 start_services
 
 log_success "Installation completed successfully!"
