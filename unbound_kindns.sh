@@ -2,7 +2,7 @@
 # unbound_kindns.sh - Recursive DNS and OSPF Routing Deploy in Docker or Podman
 # Installs Docker or Podman, Compose, and configures Unbound (compiled), FRR, and Chrony.
 # Author: Marcelo Gondim <gondim@gmail.com>
-# Version: 1.1.2
+# Version: 1.1.3
 
 # Loads system environment variables to preserve existing values
 if [ -f /etc/environment ]; then
@@ -71,7 +71,7 @@ draw_banner() {
 ============================================================================================================================================================
 EOF
     printf "Hostname: %-22s | Engine: %-8s | OSPF: %-15s | Cores: %s\n" "${HOSTNAME}" "${CONTAINER_ENGINE^^}" "${OSPF_INTERFACE:-N/A}" "${CORES}"
-    printf "Version: %-26s | Author: %-33s | %s\n" "1.1.2" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
+    printf "Version: %-26s | Author: %-33s | %s\n" "1.1.3" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
     echo -e "============================================================================================================================================================${RESET}"
 }
 
@@ -1248,8 +1248,9 @@ setup_host_environment() {
         sed -i "s|CERT_DOMAIN=.*|CERT_DOMAIN=\"${CERT_DOMAIN}\"|" /etc/environment
     fi
 
-    # Configures Hostname and Zabbix variables in /etc/environment
-    for var in ZBX_HOSTNAME ZBX_SERVER_HOST ZBX_SERVER_ACTIVE ZBX_LISTENIP; do
+    # Configures Engine, Hostname and Zabbix variables in /etc/environment
+    CTR_BIN="${CONTAINER_ENGINE}"
+    for var in CONTAINER_ENGINE CTR_BIN ZBX_HOSTNAME ZBX_SERVER_HOST ZBX_SERVER_ACTIVE ZBX_LISTENIP; do
         if ! grep -q "^${var}=" /etc/environment; then
             echo "${var}=\"${!var}\"" >> /etc/environment
         else
@@ -1283,10 +1284,15 @@ if [ -f "${STATE_TS}" ]; then
     fi
 fi
 
-# Detects container engine (podman or docker)
-CTR="docker"
-if [ -S /run/podman/podman.sock ] || { command -v podman &>/dev/null && podman ps -a --filter "name=unbound" 2>/dev/null | grep -q unbound; }; then
-    CTR="podman"
+# Detects container engine (from /etc/environment with fallback)
+[ -f /etc/environment ] && source /etc/environment
+CTR="${CTR_BIN:-${CONTAINER_ENGINE:-docker}}"
+if ! command -v "${CTR}" >/dev/null 2>&1; then
+    if [ -S /run/podman/podman.sock ] || { command -v podman &>/dev/null && podman ps -a --filter "name=unbound" 2>/dev/null | grep -q unbound; }; then
+        CTR="podman"
+    else
+        CTR="docker"
+    fi
 fi
 
 # Collects statistics using stats_noreset from inside the container
@@ -1426,7 +1432,8 @@ corte_taxa_falha=100
 STATE_FILE="/run/teste_dns.state"
 
 # 1. Detecção da Engine de Container
-CTR_BIN="${CTR_CMD:-}"
+[ -f /etc/environment ] && source /etc/environment
+CTR_BIN="${CTR_BIN:-${CONTAINER_ENGINE:-}}"
 if ! command -v "${CTR_BIN}" >/dev/null 2>&1; then
     if command -v podman >/dev/null 2>&1; then CTR_BIN="podman"; else CTR_BIN="docker"; fi
 fi
