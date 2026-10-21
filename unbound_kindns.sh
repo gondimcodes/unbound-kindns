@@ -1436,33 +1436,48 @@ V4_LOOPBACKS=$(ip -o -4 addr show dev lo scope global 2>/dev/null | awk '{print 
 V6_LOOPBACKS=$(ip -o -6 addr show dev lo scope global 2>/dev/null | awk '{print $4}')
 
 # 3. Descoberta dos Protocolos Ativos no FRR
+RUNNING_CONFIG=$(${CTR_BIN} exec frr vtysh -c 'show running-config' 2>/dev/null || true)
 DAEMONS_LIST=$(${CTR_BIN} exec frr vtysh -c 'show daemons' 2>/dev/null || true)
-HAS_OSPF2=$(echo "$DAEMONS_LIST" | grep -qw "ospfd" && echo "yes" || echo "no")
-HAS_OSPF3=$(echo "$DAEMONS_LIST" | grep -qw "ospf6d" && echo "yes" || echo "no")
-HAS_BGP=$(echo "$DAEMONS_LIST" | grep -qw "bgpd" && echo "yes" || echo "no")
-BGP_ASN=$(${CTR_BIN} exec frr vtysh -c 'show running-config' 2>/dev/null | awk '/^router bgp / {print $3}' | head -n 1)
+
+HAS_OSPF2="no"
+if echo "$DAEMONS_LIST" | grep -qw "ospfd" || echo "$RUNNING_CONFIG" | grep -q "^router ospf\b"; then
+   HAS_OSPF2="yes"
+fi
+
+HAS_OSPF3="no"
+if echo "$DAEMONS_LIST" | grep -qw "ospf6d" || echo "$RUNNING_CONFIG" | grep -q "^router ospf6\b"; then
+   HAS_OSPF3="yes"
+fi
+
+HAS_BGP="no"
+if echo "$DAEMONS_LIST" | grep -qw "bgpd" || echo "$RUNNING_CONFIG" | grep -q "^router bgp "; then
+   HAS_BGP="yes"
+fi
+
+BGP_ASN=$(echo "$RUNNING_CONFIG" | awk '/^router bgp / {print $3}' | head -n 1)
 
 is_anycast_active() {
-   # Checa se OSPFv2 está ativo na interface lo (apenas se houver loopback v4)
-   if [ "$HAS_OSPF2" = "yes" ] && [ -n "$V4_LOOPBACKS" ]; then
-      if ${CTR_BIN} exec frr vtysh -c 'show running-config interface lo' 2>/dev/null | grep -q "ip ospf area"; then
-         return 0
-      fi
+   local run_cfg
+   run_cfg=$(${CTR_BIN} exec frr vtysh -c 'show running-config' 2>/dev/null || true)
+   local lo_block
+   lo_block=$(echo "$run_cfg" | awk '/^interface lo$/,/^exit$/')
+
+   if [ "$HAS_OSPF2" = "yes" ] && echo "$lo_block" | grep -q "ip ospf area"; then
+      return 0
    fi
-   # Checa se OSPFv3 está ativo na interface lo (apenas se houver loopback v6)
-   if [ "$HAS_OSPF3" = "yes" ] && [ -n "$V6_LOOPBACKS" ]; then
-      if ${CTR_BIN} exec frr vtysh -c 'show running-config interface lo' 2>/dev/null | grep -q "ipv6 ospf6 area"; then
-         return 0
-      fi
+
+   if [ "$HAS_OSPF3" = "yes" ] && echo "$lo_block" | grep -q "ipv6 ospf6 area"; then
+      return 0
    fi
-   # Checa se BGP está anunciando as loopbacks IPv6
-   if [ "$HAS_BGP" = "yes" ] && [ -n "$V6_LOOPBACKS" ]; then
-      for net in $V6_LOOPBACKS; do
-         if ${CTR_BIN} exec frr vtysh -c 'show running-config' 2>/dev/null | grep -q "network $net"; then
+
+   if [ "$HAS_BGP" = "yes" ]; then
+      for net in $V4_LOOPBACKS $V6_LOOPBACKS; do
+         if echo "$run_cfg" | grep -q "network $net"; then
             return 0
          fi
       done
    fi
+
    return 1
 }
 
@@ -1479,84 +1494,88 @@ if [ -z "$CURRENT_STATE" ]; then
 fi
 
 remove_ospf() {
-   local CMDS="configure terminal\n"
+   local VTYSH_ARGS=("-c" "conf t" "-c" "interface lo")
    local NEED=0
 
-   if [ "$HAS_OSPF2" = "yes" ] && [ -n "$V4_LOOPBACKS" ]; then
-      CMDS+="interface lo\n no ip ospf area 0.0.0.0\n no ip ospf passive\n no description\nexit\n"
+   if [ "$HAS_OSPF2" = "yes" ]; then
+      VTYSH_ARGS+=("-c" "no ip ospf area 0.0.0.0" "-c" "no ip ospf passive")
       NEED=1
    fi
 
-   if [ "$HAS_OSPF3" = "yes" ] && [ -n "$V6_LOOPBACKS" ]; then
-      CMDS+="interface lo\n no ipv6 ospf6 area 0.0.0.0\n no ipv6 ospf6 passive\nexit\n"
+   if [ "$HAS_OSPF3" = "yes" ]; then
+      VTYSH_ARGS+=("-c" "no ipv6 ospf6 area 0.0.0.0" "-c" "no ipv6 ospf6 passive")
       NEED=1
    fi
+
+   VTYSH_ARGS+=("-c" "no description" "-c" "exit")
 
    if [ "$HAS_BGP" = "yes" ] && [ -n "$BGP_ASN" ]; then
-      local BGP_CMDS=""
+      VTYSH_ARGS+=("-c" "router bgp ${BGP_ASN}")
       if [ -n "$V6_LOOPBACKS" ]; then
+         VTYSH_ARGS+=("-c" "address-family ipv6 unicast")
          for net in $V6_LOOPBACKS; do
-            BGP_CMDS+="  no network ${net}\n"
+            VTYSH_ARGS+=("-c" "no network ${net}")
          done
-         BGP_CMDS=" address-family ipv6 unicast\n${BGP_CMDS} exit-address-family\n"
+         VTYSH_ARGS+=("-c" "exit-address-family")
          NEED=1
       fi
-      if [ -n "$V4_LOOPBACKS" ] && ${CTR_BIN} exec frr vtysh -c 'show running-config' 2>/dev/null | grep -q "address-family ipv4 unicast"; then
+      if [ -n "$V4_LOOPBACKS" ]; then
+         VTYSH_ARGS+=("-c" "address-family ipv4 unicast")
          for net in $V4_LOOPBACKS; do
-            BGP_CMDS+="  no network ${net}\n"
+            VTYSH_ARGS+=("-c" "no network ${net}")
          done
-         BGP_CMDS=" address-family ipv4 unicast\n${BGP_CMDS} exit-address-family\n"
+         VTYSH_ARGS+=("-c" "exit-address-family")
          NEED=1
       fi
-      if [ -n "$BGP_CMDS" ]; then
-         CMDS+="router bgp ${BGP_ASN}\n${BGP_CMDS}exit\n"
-      fi
+      VTYSH_ARGS+=("-c" "exit")
    fi
 
    if [ "$NEED" -eq 1 ]; then
-      CMDS+="end\nwrite memory\n"
-      echo -e "$CMDS" | ${CTR_BIN} exec -i frr vtysh >/dev/null 2>&1
+      VTYSH_ARGS+=("-c" "end" "-c" "write memory")
+      ${CTR_BIN} exec frr vtysh "${VTYSH_ARGS[@]}" >/dev/null 2>&1
    fi
 }
 
 adiciona_ospf() {
-   local CMDS="configure terminal\n"
+   local VTYSH_ARGS=("-c" "conf t" "-c" "interface lo" "-c" "description LOOPBACKS")
    local NEED=0
 
-   if [ "$HAS_OSPF2" = "yes" ] && [ -n "$V4_LOOPBACKS" ]; then
-      CMDS+="interface lo\n description LOOPBACKS\n ip ospf area 0.0.0.0\n ip ospf passive\nexit\n"
+   if [ "$HAS_OSPF2" = "yes" ]; then
+      VTYSH_ARGS+=("-c" "ip ospf area 0.0.0.0" "-c" "ip ospf passive")
       NEED=1
    fi
 
-   if [ "$HAS_OSPF3" = "yes" ] && [ -n "$V6_LOOPBACKS" ]; then
-      CMDS+="interface lo\n ipv6 ospf6 area 0.0.0.0\n ipv6 ospf6 passive\nexit\n"
+   if [ "$HAS_OSPF3" = "yes" ]; then
+      VTYSH_ARGS+=("-c" "ipv6 ospf6 area 0.0.0.0" "-c" "ipv6 ospf6 passive")
       NEED=1
    fi
+
+   VTYSH_ARGS+=("-c" "exit")
 
    if [ "$HAS_BGP" = "yes" ] && [ -n "$BGP_ASN" ]; then
-      local BGP_CMDS=""
+      VTYSH_ARGS+=("-c" "router bgp ${BGP_ASN}")
       if [ -n "$V6_LOOPBACKS" ]; then
+         VTYSH_ARGS+=("-c" "address-family ipv6 unicast")
          for net in $V6_LOOPBACKS; do
-            BGP_CMDS+="  network ${net}\n"
+            VTYSH_ARGS+=("-c" "network ${net}")
          done
-         BGP_CMDS=" address-family ipv6 unicast\n${BGP_CMDS} exit-address-family\n"
+         VTYSH_ARGS+=("-c" "exit-address-family")
          NEED=1
       fi
-      if [ -n "$V4_LOOPBACKS" ] && ${CTR_BIN} exec frr vtysh -c 'show running-config' 2>/dev/null | grep -q "address-family ipv4 unicast"; then
+      if [ -n "$V4_LOOPBACKS" ]; then
+         VTYSH_ARGS+=("-c" "address-family ipv4 unicast")
          for net in $V4_LOOPBACKS; do
-            BGP_CMDS+="  network ${net}\n"
+            VTYSH_ARGS+=("-c" "network ${net}")
          done
-         BGP_CMDS=" address-family ipv4 unicast\n${BGP_CMDS} exit-address-family\n"
+         VTYSH_ARGS+=("-c" "exit-address-family")
          NEED=1
       fi
-      if [ -n "$BGP_CMDS" ]; then
-         CMDS+="router bgp ${BGP_ASN}\n${BGP_CMDS}exit\n"
-      fi
+      VTYSH_ARGS+=("-c" "exit")
    fi
 
    if [ "$NEED" -eq 1 ]; then
-      CMDS+="end\nwrite memory\n"
-      echo -e "$CMDS" | ${CTR_BIN} exec -i frr vtysh >/dev/null 2>&1
+      VTYSH_ARGS+=("-c" "end" "-c" "write memory")
+      ${CTR_BIN} exec frr vtysh "${VTYSH_ARGS[@]}" >/dev/null 2>&1
    fi
 }
 
@@ -1566,7 +1585,7 @@ if ! ${CTR_BIN} ps --filter "name=unbound" --filter "status=running" 2>/dev/null
    ${CTR_BIN} restart unbound
    sleep 3
    if ! ${CTR_BIN} ps --filter "name=unbound" --filter "status=running" 2>/dev/null | grep -q unbound; then
-      if [ "$CURRENT_STATE" != "DOWN" ]; then
+      if is_anycast_active || [ "$CURRENT_STATE" != "DOWN" ]; then
          remove_ospf
          echo "DOWN" > "$STATE_FILE"
          echo "Servidor $HOSTNAME falhou no teste de DNS - Anúncios Anycast removidos!" | /usr/local/sbin/telegram-notify --error --text - 2>/dev/null || true
@@ -1616,7 +1635,7 @@ if [ "$taxa_falha" -ge "$corte_taxa_falha" ]; then
    echo "--------------------------------------------------------"
 
    if [ "$taxa_falha" -ge "$corte_taxa_falha" ]; then
-      if [ "$CURRENT_STATE" != "DOWN" ]; then
+      if is_anycast_active || [ "$CURRENT_STATE" != "DOWN" ]; then
          remove_ospf
          echo "DOWN" > "$STATE_FILE"
          echo "Servidor $HOSTNAME falhou no teste de DNS - Anúncios Anycast removidos!" | /usr/local/sbin/telegram-notify --error --text - 2>/dev/null || true
@@ -1625,8 +1644,8 @@ if [ "$taxa_falha" -ge "$corte_taxa_falha" ]; then
    fi
 fi
 
-# 7. Restauração: Só atua e notifica se o estado anterior era DOWN
-if [ "$CURRENT_STATE" != "UP" ]; then
+# 7. Restauração: Só atua e notifica se o estado anterior era DOWN ou se Anycast está inativo
+if ! is_anycast_active || [ "$CURRENT_STATE" != "UP" ]; then
    adiciona_ospf
    echo "UP" > "$STATE_FILE"
    echo "Servidor $HOSTNAME com DNS funcional - Anúncios Anycast restaurados!" | /usr/local/sbin/telegram-notify --success --text - 2>/dev/null || true
