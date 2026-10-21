@@ -1404,7 +1404,12 @@ EOF
     if [ -n "${OSPF_INTERFACE}" ]; then
         cat << 'EOF' > /root/scripts/teste_dns.sh
 #!/usr/bin/env bash
-# Adapted for Docker and Podman
+# ==============================================================================
+# Script: /root/scripts/teste_dns.sh
+# Função: Health-check de DNS Recursivo e Gating Anycast (OSPFv2 / OSPFv3 / BGP)
+# Suporte: Docker CE e Podman (Daemonless) com Self-Healing e Máquina de Estados
+# ==============================================================================
+
 dominios_testar=(
 www.google.com
 www.terra.com.br
@@ -1418,66 +1423,214 @@ www.debian.org
 www.redhat.com
 )
 corte_taxa_falha=100
+STATE_FILE="/run/teste_dns.state"
 
-# Detects container engine (podman or docker)
-CTR="docker"
-if [ -S /run/podman/podman.sock ] || { command -v podman &>/dev/null && podman ps -a --filter "name=unbound" 2>/dev/null | grep -q unbound; }; then
-   CTR="podman"
+# 1. Detecção da Engine de Container
+CTR_BIN="${CTR_CMD:-}"
+if ! command -v "${CTR_BIN}" >/dev/null 2>&1; then
+    if command -v podman >/dev/null 2>&1; then CTR_BIN="podman"; else CTR_BIN="docker"; fi
+fi
+
+# 2. Descoberta Automática de IPs Anycast da Loopback
+V4_LOOPBACKS=$(ip -o -4 addr show dev lo scope global 2>/dev/null | awk '{print $4}')
+V6_LOOPBACKS=$(ip -o -6 addr show dev lo scope global 2>/dev/null | awk '{print $4}')
+
+# 3. Descoberta dos Protocolos Ativos no FRR
+DAEMONS_LIST=$(${CTR_BIN} exec frr vtysh -c 'show daemons' 2>/dev/null || true)
+HAS_OSPF2=$(echo "$DAEMONS_LIST" | grep -qw "ospfd" && echo "yes" || echo "no")
+HAS_OSPF3=$(echo "$DAEMONS_LIST" | grep -qw "ospf6d" && echo "yes" || echo "no")
+HAS_BGP=$(echo "$DAEMONS_LIST" | grep -qw "bgpd" && echo "yes" || echo "no")
+BGP_ASN=$(${CTR_BIN} exec frr vtysh -c 'show running-config' 2>/dev/null | awk '/^router bgp / {print $3}' | head -n 1)
+
+is_anycast_active() {
+   # Checa se OSPFv2 está ativo na interface lo (apenas se houver loopback v4)
+   if [ "$HAS_OSPF2" = "yes" ] && [ -n "$V4_LOOPBACKS" ]; then
+      if ${CTR_BIN} exec frr vtysh -c 'show running-config interface lo' 2>/dev/null | grep -q "ip ospf area"; then
+         return 0
+      fi
+   fi
+   # Checa se OSPFv3 está ativo na interface lo (apenas se houver loopback v6)
+   if [ "$HAS_OSPF3" = "yes" ] && [ -n "$V6_LOOPBACKS" ]; then
+      if ${CTR_BIN} exec frr vtysh -c 'show running-config interface lo' 2>/dev/null | grep -q "ipv6 ospf6 area"; then
+         return 0
+      fi
+   fi
+   # Checa se BGP está anunciando as loopbacks IPv6
+   if [ "$HAS_BGP" = "yes" ] && [ -n "$V6_LOOPBACKS" ]; then
+      for net in $V6_LOOPBACKS; do
+         if ${CTR_BIN} exec frr vtysh -c 'show running-config' 2>/dev/null | grep -q "network $net"; then
+            return 0
+         fi
+      done
+   fi
+   return 1
+}
+
+# Inicialização da Máquina de Estados
+CURRENT_STATE=$(cat "$STATE_FILE" 2>/dev/null || echo "")
+if [ -z "$CURRENT_STATE" ]; then
+   if is_anycast_active; then
+      CURRENT_STATE="UP"
+      echo "UP" > "$STATE_FILE"
+   else
+      CURRENT_STATE="DOWN"
+      echo "DOWN" > "$STATE_FILE"
+   fi
 fi
 
 remove_ospf() {
-   habilitado="$(${CTR} exec frr vtysh -c 'show run' | grep "LOOPBACKS")"
-   if [ "$habilitado" != "" ]; then
-      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no description' -c 'end' -c 'wr'
-      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ip ospf area 0.0.0.0' -c 'end' -c 'wr'
-      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ip ospf passive' -c 'end' -c 'wr'
-      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ipv6 ospf6 area 0.0.0.0' -c 'end' -c 'wr'
-      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'no ipv6 ospf6 passive' -c 'end' -c 'wr'
-      echo "Server $HOSTNAME has died!" | /usr/local/sbin/telegram-notify --error --text - 2>/dev/null || true
+   local CMDS="configure terminal\n"
+   local NEED=0
+
+   if [ "$HAS_OSPF2" = "yes" ] && [ -n "$V4_LOOPBACKS" ]; then
+      CMDS+="interface lo\n no ip ospf area 0.0.0.0\n no ip ospf passive\n no description\nexit\n"
+      NEED=1
    fi
-}
- 
-adiciona_ospf() {
-   habilitado="$(${CTR} exec frr vtysh -c 'show run' | grep "LOOPBACKS")"
-   if [ "$habilitado" == "" ]; then
-      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'description LOOPBACKS' -c 'end' -c 'wr'
-      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ip ospf area 0.0.0.0' -c 'end' -c 'wr'
-      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ip ospf passive' -c 'end' -c 'wr'
-      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ipv6 ospf6 area 0.0.0.0' -c 'end' -c 'wr'
-      ${CTR} exec frr vtysh -c 'conf t' -c 'interface lo' -c 'ipv6 ospf6 passive' -c 'end' -c 'wr'
-      echo "Server $HOSTNAME is back online!" | /usr/local/sbin/telegram-notify --success --text - 2>/dev/null || true
+
+   if [ "$HAS_OSPF3" = "yes" ] && [ -n "$V6_LOOPBACKS" ]; then
+      CMDS+="interface lo\n no ipv6 ospf6 area 0.0.0.0\n no ipv6 ospf6 passive\nexit\n"
+      NEED=1
+   fi
+
+   if [ "$HAS_BGP" = "yes" ] && [ -n "$BGP_ASN" ]; then
+      local BGP_CMDS=""
+      if [ -n "$V6_LOOPBACKS" ]; then
+         for net in $V6_LOOPBACKS; do
+            BGP_CMDS+="  no network ${net}\n"
+         done
+         BGP_CMDS=" address-family ipv6 unicast\n${BGP_CMDS} exit-address-family\n"
+         NEED=1
+      fi
+      if [ -n "$V4_LOOPBACKS" ] && ${CTR_BIN} exec frr vtysh -c 'show running-config' 2>/dev/null | grep -q "address-family ipv4 unicast"; then
+         for net in $V4_LOOPBACKS; do
+            BGP_CMDS+="  no network ${net}\n"
+         done
+         BGP_CMDS=" address-family ipv4 unicast\n${BGP_CMDS} exit-address-family\n"
+         NEED=1
+      fi
+      if [ -n "$BGP_CMDS" ]; then
+         CMDS+="router bgp ${BGP_ASN}\n${BGP_CMDS}exit\n"
+      fi
+   fi
+
+   if [ "$NEED" -eq 1 ]; then
+      CMDS+="end\nwrite memory\n"
+      echo -e "$CMDS" | ${CTR_BIN} exec -i frr vtysh >/dev/null 2>&1
    fi
 }
 
-if ! ${CTR} ps --filter "name=unbound" --filter "status=running" | grep -q unbound; then
-   echo "Server $HOSTNAME DNS has died, but trying to start it!" | /usr/local/sbin/telegram-notify --error --text - 2>/dev/null || true
-   ${CTR} restart unbound
-   sleep 3
-   if ! ${CTR} ps --filter "name=unbound" --filter "status=running" | grep -q unbound; then
-      remove_ospf
-      exit
+adiciona_ospf() {
+   local CMDS="configure terminal\n"
+   local NEED=0
+
+   if [ "$HAS_OSPF2" = "yes" ] && [ -n "$V4_LOOPBACKS" ]; then
+      CMDS+="interface lo\n description LOOPBACKS\n ip ospf area 0.0.0.0\n ip ospf passive\nexit\n"
+      NEED=1
    fi
-   echo "Server $HOSTNAME DNS service is back online after failing!" | /usr/local/sbin/telegram-notify --success --text - 2>/dev/null || true
+
+   if [ "$HAS_OSPF3" = "yes" ] && [ -n "$V6_LOOPBACKS" ]; then
+      CMDS+="interface lo\n ipv6 ospf6 area 0.0.0.0\n ipv6 ospf6 passive\nexit\n"
+      NEED=1
+   fi
+
+   if [ "$HAS_BGP" = "yes" ] && [ -n "$BGP_ASN" ]; then
+      local BGP_CMDS=""
+      if [ -n "$V6_LOOPBACKS" ]; then
+         for net in $V6_LOOPBACKS; do
+            BGP_CMDS+="  network ${net}\n"
+         done
+         BGP_CMDS=" address-family ipv6 unicast\n${BGP_CMDS} exit-address-family\n"
+         NEED=1
+      fi
+      if [ -n "$V4_LOOPBACKS" ] && ${CTR_BIN} exec frr vtysh -c 'show running-config' 2>/dev/null | grep -q "address-family ipv4 unicast"; then
+         for net in $V4_LOOPBACKS; do
+            BGP_CMDS+="  network ${net}\n"
+         done
+         BGP_CMDS=" address-family ipv4 unicast\n${BGP_CMDS} exit-address-family\n"
+         NEED=1
+      fi
+      if [ -n "$BGP_CMDS" ]; then
+         CMDS+="router bgp ${BGP_ASN}\n${BGP_CMDS}exit\n"
+      fi
+   fi
+
+   if [ "$NEED" -eq 1 ]; then
+      CMDS+="end\nwrite memory\n"
+      echo -e "$CMDS" | ${CTR_BIN} exec -i frr vtysh >/dev/null 2>&1
+   fi
+}
+
+# 4. Verificação de Saúde do Container Unbound
+if ! ${CTR_BIN} ps --filter "name=unbound" --filter "status=running" 2>/dev/null | grep -q unbound; then
+   echo "Servidor $HOSTNAME morreu DNS mas tentando levantar!" | /usr/local/sbin/telegram-notify --error --text - 2>/dev/null || true
+   ${CTR_BIN} restart unbound
+   sleep 3
+   if ! ${CTR_BIN} ps --filter "name=unbound" --filter "status=running" 2>/dev/null | grep -q unbound; then
+      if [ "$CURRENT_STATE" != "DOWN" ]; then
+         remove_ospf
+         echo "DOWN" > "$STATE_FILE"
+         echo "Servidor $HOSTNAME falhou no teste de DNS - Anúncios Anycast removidos!" | /usr/local/sbin/telegram-notify --error --text - 2>/dev/null || true
+      fi
+      exit 1
+   fi
+   echo "Servidor $HOSTNAME servico DNS voltou mas tinha morrido!" | /usr/local/sbin/telegram-notify --success --text - 2>/dev/null || true
 fi
- 
-qt_falhas=0
+
+# 5. Função de Testes de Resolução Recursiva
 qt_total="${#dominios_testar[@]}"
-for site in "${dominios_testar[@]}"
-do
-  ${CTR} exec unbound unbound-control flush $site &> /dev/null
-  resolver="127.0.0.1"
-  host $site $resolver &> /dev/null
-  if [ $? -ne 0 ]; then
-     ((qt_falhas++))
-  fi
-done
-  
-taxa_falha=$((qt_falhas*100/qt_total))
+
+testar_resolucao() {
+   qt_falhas=0
+   for site in "${dominios_testar[@]}"; do
+      ${CTR_BIN} exec unbound unbound-control flush $site &> /dev/null
+      resolver="127.0.0.1"
+      printf "Testando %-20s ... " "$site"
+      if ! host -W 2 $site $resolver &> /dev/null; then
+         echo "[ FALHOU ]"
+         ((qt_falhas++))
+      else
+         echo "[ OK ]"
+      fi
+   done
+}
+
+testar_resolucao
+taxa_falha=$((qt_falhas * 100 / qt_total))
+
+echo "--------------------------------------------------------"
+echo "Resumo: $qt_falhas falha(s) de $qt_total testados (Taxa de falha: ${taxa_falha}%)"
+echo "--------------------------------------------------------"
+
+# 6. Self-Healing: Se falha for crítica (100%), tenta reiniciar Unbound para limpar infra-cache e sockets
 if [ "$taxa_falha" -ge "$corte_taxa_falha" ]; then
-   remove_ospf
-   exit
+   echo "Falha crítica na resolução. Reiniciando Unbound para destravar infra-cache e sockets..."
+   ${CTR_BIN} restart unbound
+   sleep 3
+
+   # Re-testa após o restart
+   echo "Re-testando domínios após o reinício do Unbound..."
+   testar_resolucao
+   taxa_falha=$((qt_falhas * 100 / qt_total))
+   echo "--------------------------------------------------------"
+   echo "Resumo pós-restart: $qt_falhas falha(s) de $qt_total testados (Taxa de falha: ${taxa_falha}%)"
+   echo "--------------------------------------------------------"
+
+   if [ "$taxa_falha" -ge "$corte_taxa_falha" ]; then
+      if [ "$CURRENT_STATE" != "DOWN" ]; then
+         remove_ospf
+         echo "DOWN" > "$STATE_FILE"
+         echo "Servidor $HOSTNAME falhou no teste de DNS - Anúncios Anycast removidos!" | /usr/local/sbin/telegram-notify --error --text - 2>/dev/null || true
+      fi
+      exit 0
+   fi
 fi
-adiciona_ospf
+
+# 7. Restauração: Só atua e notifica se o estado anterior era DOWN
+if [ "$CURRENT_STATE" != "UP" ]; then
+   adiciona_ospf
+   echo "UP" > "$STATE_FILE"
+   echo "Servidor $HOSTNAME com DNS funcional - Anúncios Anycast restaurados!" | /usr/local/sbin/telegram-notify --success --text - 2>/dev/null || true
+fi
 EOF
         chmod 700 /root/scripts/teste_dns.sh
     fi
