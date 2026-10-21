@@ -1172,6 +1172,9 @@ services:
     restart: always
     privileged: true
     user: root
+    init: true
+    stop_signal: SIGINT
+    stop_grace_period: 3s
     volumes:
       - zabbix_agent2_config:/etc/zabbix
       - ${engine_sock}:/var/run/docker.sock:ro
