@@ -2,7 +2,7 @@
 # unbound_kindns.sh - Recursive DNS and OSPF Routing Deploy in Docker or Podman
 # Installs Docker or Podman, Compose, and configures Unbound (compiled), FRR, and Chrony.
 # Author: Marcelo Gondim <gondim@gmail.com>
-# Version: 1.1.1
+# Version: 1.1.2
 
 # Loads system environment variables to preserve existing values
 if [ -f /etc/environment ]; then
@@ -71,7 +71,7 @@ draw_banner() {
 ============================================================================================================================================================
 EOF
     printf "Hostname: %-22s | Engine: %-8s | OSPF: %-15s | Cores: %s\n" "${HOSTNAME}" "${CONTAINER_ENGINE^^}" "${OSPF_INTERFACE:-N/A}" "${CORES}"
-    printf "Version: %-26s | Author: %-33s | %s\n" "1.1.1" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
+    printf "Version: %-26s | Author: %-33s | %s\n" "1.1.2" "Marcelo Gondim <gondim@gmail.com>" "https://ispfocus.net.br"
     echo -e "============================================================================================================================================================${RESET}"
 }
 
