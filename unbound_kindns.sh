@@ -542,6 +542,14 @@ install_podman() {
     if command -v podman &>/dev/null && podman compose version &>/dev/null; then
         systemctl enable --now podman.socket 2>/dev/null || true
         systemctl enable --now podman-restart.service 2>/dev/null || true
+        mkdir -p /etc/containers/registries.conf.d /etc/containers/containers.conf.d
+        cat << 'EOF' > /etc/containers/registries.conf.d/01-registries.conf
+unqualified-search-registries = ["docker.io", "quay.io"]
+EOF
+        cat << 'EOF' > /etc/containers/containers.conf.d/01-compose.conf
+[engine]
+compose_warning_logs = false
+EOF
         log_success "Podman and Podman Compose are already installed."
         return
     fi
@@ -557,7 +565,10 @@ install_podman() {
     systemctl enable --now podman.socket
     systemctl enable --now podman-restart.service
 
-    mkdir -p /etc/containers/containers.conf.d
+    mkdir -p /etc/containers/registries.conf.d /etc/containers/containers.conf.d
+    cat << 'EOF' > /etc/containers/registries.conf.d/01-registries.conf
+unqualified-search-registries = ["docker.io", "quay.io"]
+EOF
     cat << 'EOF' > /etc/containers/containers.conf.d/01-compose.conf
 [engine]
 compose_warning_logs = false
@@ -1152,11 +1163,10 @@ setup_zabbix_agent2() {
     fi
 
     # docker-compose.yml
-    if [[ ! -f "${base_dir}/docker-compose.yml" ]]; then
-        cat << EOF > "${base_dir}/docker-compose.yml"
+    cat << EOF > "${base_dir}/docker-compose.yml"
 services:
   zabbix-agent2:
-    image: zabbix/zabbix-agent2:alpine-7.0-latest
+    image: docker.io/zabbix/zabbix-agent2:alpine-7.0-latest
     container_name: zabbix-agent2
     network_mode: host
     restart: always
@@ -1179,7 +1189,6 @@ volumes:
   zabbix_agent2_config:
     external: true
 EOF
-    fi
 
     # Ensures the volume data folder starts clean only if it is a new installation
     local config_dir="${VOL_BASE}/zabbix_agent2_config/_data"
